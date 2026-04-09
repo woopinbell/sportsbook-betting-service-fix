@@ -6,6 +6,7 @@
 
 - Java 17과 Spring Boot 기반 프로젝트 구성
 - 단식, 복식, 시스템 베팅 집계와 상태 전이
+- PostgreSQL 저장 모델과 Flyway 스키마
 
 ## 빌드
 
