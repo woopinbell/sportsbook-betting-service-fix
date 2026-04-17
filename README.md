@@ -9,6 +9,7 @@
 - PostgreSQL 저장 모델과 Flyway 스키마
 - 슬립 구조, 금액, 마켓 상태와 배당 변동 검증
 - K-of-N 조합과 최대 지급액 계산
+- risk와 wallet HTTP 호출 및 장애 변환
 
 ## 빌드
 
