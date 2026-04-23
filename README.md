@@ -11,6 +11,7 @@
 - K-of-N 조합과 최대 지급액 계산
 - risk와 wallet HTTP 호출 및 장애 변환
 - 베팅 수락 이벤트를 저장하는 transactional outbox
+- 검증, 한도 확인, 금액 차감, 수락을 잇는 접수 흐름
 
 ## 빌드
 
