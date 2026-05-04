@@ -13,6 +13,7 @@
 - 베팅 수락 이벤트를 저장하는 transactional outbox
 - 검증, 한도 확인, 금액 차감, 수락을 잇는 접수 흐름
 - 저장된 outbox 이벤트의 Kafka 전송
+- 오래 남은 PENDING 베팅의 멱등 복구
 
 ## 빌드
 
