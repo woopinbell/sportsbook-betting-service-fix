@@ -25,9 +25,11 @@ import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -48,6 +50,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
     })
 @Testcontainers
 @ActiveProfiles("test")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class BetReconciliationIntegrationTest {
 
   private static final String DEBIT_PATH = "/internal/v1/wallet/transactions/debit";
@@ -118,8 +121,8 @@ class BetReconciliationIntegrationTest {
     return betId;
   }
 
-  @Test
-  @DisplayName("debit confirms -> roll forward to ACCEPTED + outbox row")
+  @RepeatedTest(10)
+  @DisplayName("debit confirms repeated -> roll forward to ACCEPTED + outbox row")
   void rollForward() {
     wireMock.stubFor(
         post(urlEqualTo(DEBIT_PATH))

@@ -5,12 +5,21 @@ spring:
   flyway:
     enabled: true
     clean-disabled: false
+  data:
+    redis:
+      # Integration tests favor determinism over the production fail-fast bound.
+      timeout: 2s
   # datasource / data.redis / kafka are filled by @DynamicPropertySource from
   # Testcontainers in each integration test class — leaving them unset here so
   # a forgotten override surfaces as a NoSuchBeanDefinitionException instead of
   # silently falling back to a stale local PostgreSQL.
 
 betting:
+  clients:
+    # WireMock/Testcontainers can be briefly slower on a cold Docker daemon.
+    # Production keeps the 200ms/500ms bounds from application.yml.
+    connect-timeout: 2s
+    read-timeout: 5s
   # Park both @Scheduled jobs (24h) so each test drives the outbox publisher /
   # reconciliation explicitly. pending-timeout 0s makes any PENDING bet
   # immediately eligible for the reconciliation scan.

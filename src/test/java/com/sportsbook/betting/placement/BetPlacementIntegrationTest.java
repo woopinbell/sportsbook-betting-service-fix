@@ -31,10 +31,14 @@ import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.RepeatedTest;
+import org.junit.jupiter.api.RepetitionInfo;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -53,6 +57,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
     })
 @Testcontainers
 @ActiveProfiles("test")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class BetPlacementIntegrationTest {
 
   private static final String RISK_PATH = "/internal/v1/risk/check";
@@ -102,6 +107,12 @@ class BetPlacementIntegrationTest {
     wireMock.resetAll();
     outbox.deleteAll();
     bets.deleteAll();
+    RedisConnection connection = redisTemplate.getConnectionFactory().getConnection();
+    try {
+      connection.serverCommands().flushDb();
+    } finally {
+      connection.close();
+    }
     // Seed the odds-feed cache so slippage passes: market OPEN, current odds == submitted.
     redisTemplate.opsForValue().set("market:" + eventId + ":" + marketId, "OPEN");
     redisTemplate
@@ -128,13 +139,14 @@ class BetPlacementIntegrationTest {
             .willReturn(okJson("{\"operationGroupId\":\"" + UuidV7.generate() + "\"}")));
   }
 
-  @Test
-  @DisplayName("happy path: accepts, computes payout, writes one BetPlacedRequested outbox row")
-  void accepts() {
+  @RepeatedTest(10)
+  @DisplayName(
+      "happy path repeated: accepts, computes payout, writes one BetPlacedRequested outbox row")
+  void accepts(RepetitionInfo repetition) {
     stubRiskApproved();
     stubWalletDebitOk();
 
-    Bet result = placement.place(single("idem-accept"));
+    Bet result = placement.place(single("idem-accept-" + repetition.getCurrentRepetition()));
 
     assertThat(result.status()).isEqualTo(BetStatus.ACCEPTED);
     assertThat(result.betReference()).startsWith("B-");
