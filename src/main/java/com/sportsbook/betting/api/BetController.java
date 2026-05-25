@@ -3,6 +3,7 @@ package com.sportsbook.betting.api;
 import com.sportsbook.betting.api.PlaceBetRequest.SelectionRequest;
 import com.sportsbook.betting.api.PlaceBetRequest.SlipTypeRequest;
 import com.sportsbook.betting.domain.Bet;
+import com.sportsbook.betting.error.ForbiddenException;
 import com.sportsbook.betting.placement.BetPlacementService;
 import com.sportsbook.betting.placement.BetQueryService;
 import com.sportsbook.betting.placement.PlaceBetCommand;
@@ -17,6 +18,7 @@ import java.util.Locale;
 import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -34,6 +36,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/internal/v1/bets")
 public class BetController {
 
+  private static final String ACTOR_HEADER = "X-User-Id";
+
   private final BetPlacementService placement;
   private final BetQueryService query;
 
@@ -42,39 +46,75 @@ public class BetController {
     this.query = query;
   }
 
+  @ModelAttribute
+  void requireActorBeforeBinding(
+      @RequestHeader(value = ACTOR_HEADER, required = false) String actorHeader) {
+    requireActor(actorHeader);
+  }
+
   /**
    * Places a slip. Synchronous accept/reject (ADR-0017); the Idempotency-Key header is required.
    */
   @PostMapping
   public ResponseEntity<BetResponse> place(
+      @RequestHeader(value = ACTOR_HEADER, required = false) String actorHeader,
       @RequestHeader("Idempotency-Key") String idempotencyKey,
       @Valid @RequestBody PlaceBetRequest request) {
-    Bet bet = placement.place(toCommand(request, idempotencyKey));
+    UUID actor = requireActor(actorHeader);
+    requireSameUser(actor, request.userId());
+    Bet bet = placement.place(toCommand(actor, request, idempotencyKey));
     return ResponseEntity.created(URI.create("/internal/v1/bets/" + bet.betId()))
         .body(BetResponse.from(bet));
   }
 
   @GetMapping("/{betId}")
-  public BetResponse get(@PathVariable UUID betId) {
-    return BetResponse.from(query.byId(betId));
+  public BetResponse get(
+      @RequestHeader(value = ACTOR_HEADER, required = false) String actorHeader,
+      @PathVariable UUID betId) {
+    return BetResponse.from(query.byId(requireActor(actorHeader), betId));
   }
 
   /** A user's bets, newest first, keyset-paginated by betId (ADR-0004 cursor pagination). */
   @GetMapping
   public CursorPage<BetResponse> list(
+      @RequestHeader(value = ACTOR_HEADER, required = false) String actorHeader,
       @RequestParam UUID userId,
       @RequestParam(required = false) UUID cursor,
       @RequestParam(required = false) Integer limit) {
-    CursorPage<Bet> page = query.page(userId, cursor, limit);
+    UUID actor = requireActor(actorHeader);
+    requireSameUser(actor, userId);
+    CursorPage<Bet> page = query.page(actor, cursor, limit);
     List<BetResponse> items = page.items().stream().map(BetResponse::from).toList();
     return new CursorPage<>(items, page.nextCursor(), page.hasMore());
   }
 
-  private static PlaceBetCommand toCommand(PlaceBetRequest request, String idempotencyKey) {
+  private static UUID requireActor(String actorHeader) {
+    if (actorHeader == null || actorHeader.isBlank()) {
+      throw new ForbiddenException("A valid X-User-Id actor is required");
+    }
+    try {
+      UUID actor = UUID.fromString(actorHeader);
+      if (!actor.toString().equalsIgnoreCase(actorHeader)) {
+        throw new ForbiddenException("A valid X-User-Id actor is required");
+      }
+      return actor;
+    } catch (IllegalArgumentException invalid) {
+      throw new ForbiddenException("A valid X-User-Id actor is required");
+    }
+  }
+
+  private static void requireSameUser(UUID actor, UUID requestedUser) {
+    if (!actor.equals(requestedUser)) {
+      throw new ForbiddenException("The authenticated actor does not match the requested user");
+    }
+  }
+
+  private static PlaceBetCommand toCommand(
+      UUID actor, PlaceBetRequest request, String idempotencyKey) {
     List<SelectionInput> selections =
         request.selections().stream().map(BetController::toSelection).toList();
     return new PlaceBetCommand(
-        request.userId(),
+        actor,
         toSlipType(request.slipType()),
         selections,
         request.stake(),

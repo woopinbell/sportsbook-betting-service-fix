@@ -12,6 +12,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.sportsbook.betting.domain.Bet;
+import com.sportsbook.betting.error.DuplicateBetException;
 import com.sportsbook.betting.error.InsufficientBalanceException;
 import com.sportsbook.betting.error.RiskLimitException;
 import com.sportsbook.betting.infrastructure.id.UuidV7;
@@ -121,8 +122,12 @@ class BetPlacementIntegrationTest {
   }
 
   private PlaceBetCommand single(String idempotencyKey) {
+    return single(userId, idempotencyKey);
+  }
+
+  private PlaceBetCommand single(UUID actorId, String idempotencyKey) {
     return new PlaceBetCommand(
-        userId,
+        actorId,
         new BetSlipType.Single(),
         List.of(new SelectionInput(eventId, marketId, selectionId, Odds.ofDecimal("2.0000"))),
         Money.krw(10_000),
@@ -215,6 +220,24 @@ class BetPlacementIntegrationTest {
     assertThat(bets.findAll()).hasSize(1);
     assertThat(outbox.count()).isEqualTo(1);
     // The wallet was debited exactly once — the replay short-circuited before any HTTP call.
+    wireMock.verify(exactly(1), postRequestedFor(urlEqualTo(DEBIT_PATH)));
+  }
+
+  @Test
+  @DisplayName("same Idempotency-Key from another actor -> 409 contract without bet disclosure")
+  void idempotencyKeyCannotCrossActors() {
+    stubRiskApproved();
+    stubWalletDebitOk();
+    Bet first = placement.place(single("idem-cross-actor"));
+
+    assertThatThrownBy(() -> placement.place(single(UuidV7.generate(), "idem-cross-actor")))
+        .isInstanceOf(DuplicateBetException.class)
+        .hasMessage("Idempotency-Key cannot be reused by this actor")
+        .hasMessageNotContaining(first.betId().toString())
+        .hasMessageNotContaining(first.betReference());
+
+    assertThat(bets.findAll()).hasSize(1);
+    assertThat(outbox.count()).isEqualTo(1);
     wireMock.verify(exactly(1), postRequestedFor(urlEqualTo(DEBIT_PATH)));
   }
 }

@@ -2,6 +2,7 @@ package com.sportsbook.betting.api;
 
 import com.sportsbook.betting.error.BetNotFoundException;
 import com.sportsbook.betting.error.BetPlacementException;
+import com.sportsbook.betting.error.ForbiddenException;
 import com.sportsbook.protocol.error.ErrorCode;
 import com.sportsbook.protocol.error.ProblemDetail;
 import jakarta.servlet.http.HttpServletRequest;
@@ -33,6 +34,7 @@ public class BetExceptionHandler {
 
   private static final Logger log = LoggerFactory.getLogger(BetExceptionHandler.class);
   private static final URI NOT_FOUND_TYPE = URI.create("https://sportsbook/errors/not-found");
+  private static final URI FORBIDDEN_TYPE = URI.create("https://sportsbook/errors/forbidden");
 
   @ExceptionHandler(BetPlacementException.class)
   public ResponseEntity<ProblemDetail> handlePlacement(
@@ -53,6 +55,23 @@ public class BetExceptionHandler {
             URI.create(request.getRequestURI()),
             MDC.get("traceId"));
     return ResponseEntity.status(HttpStatus.NOT_FOUND)
+        .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+        .body(body);
+  }
+
+  @ExceptionHandler(ForbiddenException.class)
+  public ResponseEntity<ProblemDetail> handleForbidden(
+      ForbiddenException e, HttpServletRequest request) {
+    ProblemDetail body =
+        new ProblemDetail(
+            FORBIDDEN_TYPE,
+            "Forbidden",
+            HttpStatus.FORBIDDEN.value(),
+            "FORBIDDEN",
+            e.getMessage(),
+            URI.create(request.getRequestURI()),
+            MDC.get("traceId"));
+    return ResponseEntity.status(HttpStatus.FORBIDDEN)
         .contentType(MediaType.APPLICATION_PROBLEM_JSON)
         .body(body);
   }

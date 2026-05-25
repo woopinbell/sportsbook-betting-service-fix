@@ -93,7 +93,7 @@ public class BetPlacementService {
     // 1. Idempotent replay: the DB is authoritative for an already-committed bet.
     Optional<Bet> committed = store.findByIdempotencyKey(key);
     if (committed.isPresent()) {
-      return committed.get();
+      return replayForActor(committed.get(), command.userId());
     }
 
     // 2-3. Validate before any side effect, so a malformed slip burns no idempotency key / row.
@@ -109,6 +109,7 @@ public class BetPlacementService {
     if (!idempotency.tryReserve(command.idempotencyKey())) {
       return store
           .findByIdempotencyKey(key)
+          .map(bet -> replayForActor(bet, command.userId()))
           .orElseThrow(
               () ->
                   new DuplicateBetException("A bet with this Idempotency-Key is being processed"));
@@ -131,7 +132,10 @@ public class BetPlacementService {
       store.savePending(bet);
     } catch (DataIntegrityViolationException duplicate) {
       // A concurrent request won the race and committed first; return its bet.
-      return store.findByIdempotencyKey(key).orElseThrow(() -> duplicate);
+      return store
+          .findByIdempotencyKey(key)
+          .map(existing -> replayForActor(existing, command.userId()))
+          .orElseThrow(() -> duplicate);
     }
 
     // 5-6. Synchronous risk then wallet — outside any DB transaction. betId is the wallet
@@ -149,6 +153,13 @@ public class BetPlacementService {
     Bet accepted = store.acceptAndEnqueue(betId, event, clock.instant());
     idempotency.markProcessed(command.idempotencyKey(), betId);
     return accepted;
+  }
+
+  private static Bet replayForActor(Bet existing, UUID actorId) {
+    if (!existing.userId().equals(actorId)) {
+      throw new DuplicateBetException("Idempotency-Key cannot be reused by this actor");
+    }
+    return existing;
   }
 
   private static List<BetLeg> toLegs(List<SelectionInput> selections) {

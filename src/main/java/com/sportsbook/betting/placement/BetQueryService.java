@@ -28,8 +28,9 @@ public class BetQueryService {
   }
 
   @Transactional(readOnly = true)
-  public Bet byId(UUID betId) {
+  public Bet byId(UUID actorId, UUID betId) {
     return bets.findWithLegsByBetId(betId)
+        .filter(bet -> bet.userId().equals(actorId))
         .orElseThrow(() -> new BetNotFoundException("No bet with id " + betId));
   }
 
@@ -38,13 +39,13 @@ public class BetQueryService {
    * hasMore} without a count query; {@code nextCursor} is the last betId of the page.
    */
   @Transactional(readOnly = true)
-  public CursorPage<Bet> page(UUID userId, UUID cursor, Integer requestedLimit) {
+  public CursorPage<Bet> page(UUID actorId, UUID cursor, Integer requestedLimit) {
     int limit = clampLimit(requestedLimit);
     PageRequest probe = PageRequest.of(0, limit + 1);
     List<Bet> rows =
         cursor == null
-            ? bets.findByUserIdOrderByBetIdDesc(userId, probe)
-            : bets.findByUserIdAndBetIdLessThanOrderByBetIdDesc(userId, cursor, probe);
+            ? bets.findByUserIdOrderByBetIdDesc(actorId, probe)
+            : bets.findByUserIdAndBetIdLessThanOrderByBetIdDesc(actorId, cursor, probe);
 
     boolean hasMore = rows.size() > limit;
     List<Bet> items = hasMore ? rows.subList(0, limit) : rows;

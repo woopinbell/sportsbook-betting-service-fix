@@ -1,6 +1,9 @@
 package com.sportsbook.betting.api;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -20,6 +23,7 @@ import com.sportsbook.betting.error.RiskLimitException;
 import com.sportsbook.betting.infrastructure.id.UuidV7;
 import com.sportsbook.betting.placement.BetPlacementService;
 import com.sportsbook.betting.placement.BetQueryService;
+import com.sportsbook.betting.placement.PlaceBetCommand;
 import com.sportsbook.protocol.domain.BetSlipType;
 import com.sportsbook.protocol.value.IdempotencyKey;
 import com.sportsbook.protocol.value.Money;
@@ -29,6 +33,7 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -40,15 +45,20 @@ import org.springframework.test.web.servlet.MockMvc;
 class BetControllerTest {
 
   private static final UUID USER = UuidV7.generate();
+  private static final UUID OTHER_USER = UuidV7.generate();
 
   @Autowired MockMvc mvc;
   @MockBean BetPlacementService placement;
   @MockBean BetQueryService query;
 
   private static String singleRequest() {
+    return singleRequest(USER);
+  }
+
+  private static String singleRequest(UUID userId) {
     return "{"
         + "\"userId\":\""
-        + USER
+        + userId
         + "\","
         + "\"slipType\":{\"type\":\"SINGLE\"},"
         + "\"selections\":[{\"eventId\":\""
@@ -90,6 +100,7 @@ class BetControllerTest {
 
     mvc.perform(
             post("/internal/v1/bets")
+                .header("X-User-Id", USER)
                 .header("Idempotency-Key", "idem-web")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(singleRequest()))
@@ -99,6 +110,10 @@ class BetControllerTest {
         .andExpect(jsonPath("$.status").value("ACCEPTED"))
         .andExpect(jsonPath("$.betReference").value("B-2026-05-29-WEB00001"))
         .andExpect(jsonPath("$.maxPayout.amount").value(20000));
+
+    ArgumentCaptor<PlaceBetCommand> command = ArgumentCaptor.forClass(PlaceBetCommand.class);
+    verify(placement).place(command.capture());
+    assertThat(command.getValue().userId()).isEqualTo(USER);
   }
 
   @Test
@@ -106,6 +121,7 @@ class BetControllerTest {
   void missingIdempotencyKey() throws Exception {
     mvc.perform(
             post("/internal/v1/bets")
+                .header("X-User-Id", USER)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(singleRequest()))
         .andExpect(status().isBadRequest())
@@ -123,6 +139,7 @@ class BetControllerTest {
             + "\"stake\":{\"amount\":10000,\"currency\":\"KRW\"}}";
     mvc.perform(
             post("/internal/v1/bets")
+                .header("X-User-Id", USER)
                 .header("Idempotency-Key", "idem-web")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
@@ -169,9 +186,9 @@ class BetControllerTest {
   @DisplayName("GET by id not found -> 404 BET_NOT_FOUND")
   void notFound() throws Exception {
     UUID betId = UuidV7.generate();
-    when(query.byId(betId)).thenThrow(new BetNotFoundException("nope"));
+    when(query.byId(USER, betId)).thenThrow(new BetNotFoundException("nope"));
 
-    mvc.perform(get("/internal/v1/bets/{id}", betId))
+    mvc.perform(get("/internal/v1/bets/{id}", betId).header("X-User-Id", USER))
         .andExpect(status().isNotFound())
         .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
         .andExpect(jsonPath("$.errorCode").value("BET_NOT_FOUND"));
@@ -181,9 +198,9 @@ class BetControllerTest {
   @DisplayName("GET by id found -> 200 with body")
   void getById() throws Exception {
     Bet bet = acceptedBet();
-    when(query.byId(bet.betId())).thenReturn(bet);
+    when(query.byId(USER, bet.betId())).thenReturn(bet);
 
-    mvc.perform(get("/internal/v1/bets/{id}", bet.betId()))
+    mvc.perform(get("/internal/v1/bets/{id}", bet.betId()).header("X-User-Id", USER))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.status").value("ACCEPTED"))
         .andExpect(jsonPath("$.selections", org.hamcrest.Matchers.hasSize(1)));
@@ -195,16 +212,176 @@ class BetControllerTest {
     when(query.page(any(), any(), any()))
         .thenReturn(new CursorPage<>(List.of(acceptedBet()), "cursor-123", true));
 
-    mvc.perform(get("/internal/v1/bets").param("userId", USER.toString()))
+    mvc.perform(get("/internal/v1/bets").header("X-User-Id", USER).param("userId", USER.toString()))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.items", org.hamcrest.Matchers.hasSize(1)))
         .andExpect(jsonPath("$.nextCursor").value("cursor-123"))
         .andExpect(jsonPath("$.hasMore").value(true));
   }
 
+  @Test
+  @DisplayName("POST without gateway actor -> 403 betting-local FORBIDDEN")
+  void placeMissingActor() throws Exception {
+    mvc.perform(
+            post("/internal/v1/bets")
+                .header("Idempotency-Key", "idem-web")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(singleRequest()))
+        .andExpect(status().isForbidden())
+        .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(placement);
+  }
+
+  @Test
+  @DisplayName("POST with malformed gateway actor -> 403 betting-local FORBIDDEN")
+  void placeMalformedActor() throws Exception {
+    mvc.perform(
+            post("/internal/v1/bets")
+                .header("X-User-Id", "not-a-uuid")
+                .header("Idempotency-Key", "idem-web")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(singleRequest()))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(placement);
+  }
+
+  @Test
+  @DisplayName("POST with non-canonical UUID actor -> 403 betting-local FORBIDDEN")
+  void placeNonCanonicalActor() throws Exception {
+    mvc.perform(
+            post("/internal/v1/bets")
+                .header("X-User-Id", "1-1-1-1-1")
+                .header("Idempotency-Key", "idem-web")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(singleRequest()))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(placement);
+  }
+
+  @Test
+  @DisplayName("POST body user different from gateway actor -> 403 FORBIDDEN")
+  void placeActorMismatch() throws Exception {
+    mvc.perform(
+            post("/internal/v1/bets")
+                .header("X-User-Id", USER)
+                .header("Idempotency-Key", "idem-web")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(singleRequest(OTHER_USER)))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(placement);
+  }
+
+  @Test
+  @DisplayName("GET by id without gateway actor -> 403 FORBIDDEN")
+  void getMissingActor() throws Exception {
+    mvc.perform(get("/internal/v1/bets/{id}", UuidV7.generate()))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(query);
+  }
+
+  @Test
+  @DisplayName("GET by id with malformed gateway actor -> 403 FORBIDDEN")
+  void getMalformedActor() throws Exception {
+    mvc.perform(get("/internal/v1/bets/{id}", UuidV7.generate()).header("X-User-Id", "not-a-uuid"))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(query);
+  }
+
+  @Test
+  @DisplayName("another actor's GET is indistinguishable from an absent bet")
+  void getOtherActorsBet() throws Exception {
+    UUID betId = UuidV7.generate();
+    when(query.byId(OTHER_USER, betId)).thenThrow(new BetNotFoundException("nope"));
+
+    mvc.perform(get("/internal/v1/bets/{id}", betId).header("X-User-Id", OTHER_USER))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.errorCode").value("BET_NOT_FOUND"))
+        .andExpect(jsonPath("$.betId").doesNotExist())
+        .andExpect(jsonPath("$.userId").doesNotExist());
+  }
+
+  @Test
+  @DisplayName("GET list without gateway actor -> 403 FORBIDDEN")
+  void listMissingActor() throws Exception {
+    mvc.perform(get("/internal/v1/bets").param("userId", USER.toString()))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(query);
+  }
+
+  @Test
+  @DisplayName("GET list with malformed gateway actor -> 403 FORBIDDEN")
+  void listMalformedActor() throws Exception {
+    mvc.perform(
+            get("/internal/v1/bets")
+                .header("X-User-Id", "not-a-uuid")
+                .param("userId", USER.toString()))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(query);
+  }
+
+  @Test
+  @DisplayName("GET list query user different from gateway actor -> 403 FORBIDDEN")
+  void listActorMismatch() throws Exception {
+    mvc.perform(
+            get("/internal/v1/bets")
+                .header("X-User-Id", USER)
+                .param("userId", OTHER_USER.toString()))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(query);
+  }
+
+  @Test
+  @DisplayName("actor rejection precedes missing idempotency key and malformed JSON")
+  void placeMissingActorPrecedesOtherBindingFailures() throws Exception {
+    mvc.perform(post("/internal/v1/bets").contentType(MediaType.APPLICATION_JSON).content("{"))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(placement);
+  }
+
+  @Test
+  @DisplayName("actor rejection precedes malformed bet id conversion")
+  void getMalformedActorPrecedesMalformedBetId() throws Exception {
+    mvc.perform(get("/internal/v1/bets/{id}", "not-a-uuid").header("X-User-Id", "also-invalid"))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(query);
+  }
+
+  @Test
+  @DisplayName("actor rejection precedes missing user and malformed cursor query")
+  void listMissingActorPrecedesOtherBindingFailures() throws Exception {
+    mvc.perform(get("/internal/v1/bets").param("cursor", "not-a-uuid"))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+
+    verifyNoInteractions(query);
+  }
+
   private void expectProblem(int statusCode, String errorCode) throws Exception {
     mvc.perform(
             post("/internal/v1/bets")
+                .header("X-User-Id", USER)
                 .header("Idempotency-Key", "idem-web")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(singleRequest()))
