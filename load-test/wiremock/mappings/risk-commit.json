@@ -1,0 +1,9 @@
+{
+  "request": {
+    "method": "PUT",
+    "urlPathPattern": "/internal/v1/risk/reservations/[0-9a-f-]+/commit"
+  },
+  "response": {
+    "status": 204
+  }
+}

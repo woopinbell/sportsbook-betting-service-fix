@@ -3,9 +3,9 @@ package com.sportsbook.betting.error;
 import com.sportsbook.protocol.error.ErrorCode;
 
 /**
- * A bet with the same {@code Idempotency-Key} is already being processed and has not yet committed.
- * Maps to {@link ErrorCode#DUPLICATE_BET} (HTTP 409). Once the in-flight request commits, a retry
- * with the same key returns that bet instead (idempotent replay, ADR-0005).
+ * The same {@code Idempotency-Key} was reused by another actor or with another request payload.
+ * Maps to {@link ErrorCode#DUPLICATE_BET} (HTTP 409). A same-actor, same-payload request always
+ * replays the durable bet/verdict, including while that bet remains PENDING.
  */
 public class DuplicateBetException extends BetPlacementException {
 

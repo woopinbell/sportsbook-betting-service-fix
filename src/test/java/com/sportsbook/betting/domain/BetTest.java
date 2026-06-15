@@ -54,6 +54,12 @@ class BetTest {
         T0);
   }
 
+  private static void confirmPlacement(Bet bet) {
+    bet.recordRiskReservation(T2, false, T1);
+    bet.confirmWallet(UuidV7.generate(), T1);
+    bet.commitRisk(T1);
+  }
+
   @Nested
   @DisplayName("structural shape per slip type")
   class Structure {
@@ -161,6 +167,7 @@ class BetTest {
     void accept_moves_to_accepted() {
       Bet bet = pending(new BetSlipType.Single(), legs(1));
 
+      confirmPlacement(bet);
       bet.accept(T1);
 
       assertThat(bet.status()).isEqualTo(BetStatus.ACCEPTED);
@@ -178,8 +185,55 @@ class BetTest {
     }
 
     @Test
+    void risk_release_compensation_fences_wallet_retry_until_rejection() {
+      Bet bet = pending(new BetSlipType.Single(), legs(1));
+      bet.recordRiskReservation(T2, false, T1);
+
+      bet.requireRiskRelease("INSUFFICIENT_BALANCE", "too low", T1);
+
+      assertThat(bet.compensationAction()).isEqualTo(CompensationAction.RISK_RELEASE);
+      assertThat(bet.compensationState()).isEqualTo(CompensationState.REQUIRED);
+      assertThatThrownBy(() -> bet.confirmWallet(UuidV7.generate(), T1))
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("fenced");
+
+      bet.beginCompensation(T1);
+      bet.completeRiskRelease(T1);
+      bet.rejectAfterCompensation(T1);
+
+      assertThat(bet.status()).isEqualTo(BetStatus.REJECTED);
+      assertThat(bet.compensationState()).isEqualTo(CompensationState.COMPLETED);
+      assertThat(bet.rejectionReason()).isEqualTo("INSUFFICIENT_BALANCE");
+    }
+
+    @Test
+    void wallet_refund_compensation_fences_risk_commit_and_keeps_operation_proof() {
+      Bet bet = pending(new BetSlipType.Single(), legs(1));
+      bet.recordRiskReservation(T2, false, T1);
+      bet.confirmWallet(UuidV7.generate(), T1);
+
+      bet.requireWalletRefund("LIMIT_EXCEEDED", "daily limit", T1);
+
+      assertThat(bet.compensationAction()).isEqualTo(CompensationAction.WALLET_REFUND);
+      assertThat(bet.compensationState()).isEqualTo(CompensationState.REQUIRED);
+      assertThatThrownBy(() -> bet.commitRisk(T1))
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("fenced");
+
+      UUID refundOperation = UuidV7.generate();
+      bet.beginCompensation(T1);
+      bet.completeWalletRefund(refundOperation, T1);
+      bet.rejectAfterCompensation(T1);
+
+      assertThat(bet.status()).isEqualTo(BetStatus.REJECTED);
+      assertThat(bet.compensationState()).isEqualTo(CompensationState.COMPLETED);
+      assertThat(bet.compensationOperationId()).isEqualTo(refundOperation);
+    }
+
+    @Test
     void cannot_accept_twice() {
       Bet bet = pending(new BetSlipType.Single(), legs(1));
+      confirmPlacement(bet);
       bet.accept(T1);
 
       assertThatThrownBy(() -> bet.accept(T1)).isInstanceOf(IllegalStateException.class);
@@ -188,6 +242,7 @@ class BetTest {
     @Test
     void cannot_reject_after_accept() {
       Bet bet = pending(new BetSlipType.Single(), legs(1));
+      confirmPlacement(bet);
       bet.accept(T1);
 
       assertThatThrownBy(() -> bet.reject("late", T1)).isInstanceOf(IllegalStateException.class);
@@ -200,8 +255,18 @@ class BetTest {
 
     private Bet accepted() {
       Bet bet = pending(new BetSlipType.Single(), legs(1));
+      confirmPlacement(bet);
       bet.accept(T1);
       return bet;
+    }
+
+    @Test
+    void cannot_accept_before_external_checkpoints_complete() {
+      Bet bet = pending(new BetSlipType.Single(), legs(1));
+
+      assertThatThrownBy(() -> bet.accept(T1))
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("RISK_COMMITTED");
     }
 
     @Test

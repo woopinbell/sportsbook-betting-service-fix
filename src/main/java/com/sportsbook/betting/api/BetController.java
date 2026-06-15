@@ -9,6 +9,7 @@ import com.sportsbook.betting.placement.BetQueryService;
 import com.sportsbook.betting.placement.PlaceBetCommand;
 import com.sportsbook.betting.placement.PlaceBetCommand.SelectionInput;
 import com.sportsbook.protocol.domain.BetSlipType;
+import com.sportsbook.protocol.domain.BetStatus;
 import com.sportsbook.protocol.value.IdempotencyKey;
 import com.sportsbook.protocol.value.Odds;
 import jakarta.validation.Valid;
@@ -52,9 +53,7 @@ public class BetController {
     requireActor(actorHeader);
   }
 
-  /**
-   * Places a slip. Synchronous accept/reject (ADR-0017); the Idempotency-Key header is required.
-   */
+  /** Places a slip. Completed acceptance is 201; recoverable ambiguity is 202 with a Location. */
   @PostMapping
   public ResponseEntity<BetResponse> place(
       @RequestHeader(value = ACTOR_HEADER, required = false) String actorHeader,
@@ -63,8 +62,13 @@ public class BetController {
     UUID actor = requireActor(actorHeader);
     requireSameUser(actor, request.userId());
     Bet bet = placement.place(toCommand(actor, request, idempotencyKey));
-    return ResponseEntity.created(URI.create("/internal/v1/bets/" + bet.betId()))
-        .body(BetResponse.from(bet));
+    // The service is called through gateway in public flows. Expose a Location the client can
+    // follow instead of leaking the service-only /internal/v1 route.
+    URI location = URI.create("/api/v1/bets/" + bet.betId());
+    if (bet.status() == BetStatus.PENDING) {
+      return ResponseEntity.accepted().location(location).body(BetResponse.from(bet));
+    }
+    return ResponseEntity.created(location).body(BetResponse.from(bet));
   }
 
   @GetMapping("/{betId}")

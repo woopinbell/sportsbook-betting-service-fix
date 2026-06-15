@@ -7,8 +7,10 @@ import com.sportsbook.betting.error.InsufficientBalanceException;
 import com.sportsbook.protocol.value.Money;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import java.io.IOException;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.ClientHttpResponse;
@@ -24,13 +26,14 @@ import org.springframework.web.client.RestClientException;
  * <p>wallet returns HTTP 422 with {@code code = WALLET_INSUFFICIENT_BALANCE} for the one business
  * rejection — translated to {@link InsufficientBalanceException} (never trips the breaker). Any
  * transport failure (timeout, connection, 5xx) or unexpected client error becomes {@link
- * DependencyUnavailableException} (fail-closed — the only recorded exception).
+ * DependencyUnavailableException} (keeps placement PENDING — the only recorded exception).
  */
 @Component
 public class WalletClient {
 
   private static final String DEBIT_PATH = "/internal/v1/wallet/transactions/debit";
   private static final String CREDIT_PATH = "/internal/v1/wallet/transactions/credit";
+  private static final String DEBIT_LOOKUP_PATH = "/internal/v1/wallet/transactions/debit/{betId}";
   private static final String INSUFFICIENT_BALANCE_CODE = "WALLET_INSUFFICIENT_BALANCE";
   // wallet's CreditCommand.Source value that refunds the held stake from the locked bucket.
   private static final String REFUND_SOURCE = "USER_LOCKED";
@@ -56,7 +59,7 @@ public class WalletClient {
               .retrieve()
               .onStatus(HttpStatusCode::is4xxClientError, (request, res) -> throwMapped(res))
               .body(WalletOperationResponse.class);
-      return response == null ? null : response.operationGroupId();
+      return requireOperationId(response, "debit");
     } catch (BetPlacementException e) {
       throw e;
     } catch (RestClientException e) {
@@ -80,11 +83,40 @@ public class WalletClient {
               .retrieve()
               .onStatus(HttpStatusCode::is4xxClientError, (request, res) -> throwMapped(res))
               .body(WalletOperationResponse.class);
-      return response == null ? null : response.operationGroupId();
+      return requireOperationId(response, "refund");
     } catch (BetPlacementException e) {
       throw e;
     } catch (RestClientException e) {
       throw new DependencyUnavailableException("wallet refund failed: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Looks up the betId-keyed debit without creating a side effect. An empty result is a definitive
+   * 404; transport errors remain ambiguous.
+   */
+  @CircuitBreaker(name = "walletClient", fallbackMethod = "findDebitFallback")
+  public Optional<WalletOperationResponse> findDebit(UUID betId) {
+    try {
+      WalletOperationResponse response =
+          http.get()
+              .uri(DEBIT_LOOKUP_PATH, betId)
+              .retrieve()
+              .onStatus(
+                  status -> status.value() == HttpStatus.NOT_FOUND.value(),
+                  (request, ignored) -> {
+                    throw new DebitNotFoundMarker();
+                  })
+              .onStatus(HttpStatusCode::is4xxClientError, (request, res) -> throwMapped(res))
+              .body(WalletOperationResponse.class);
+      requireOperationId(response, "debit lookup");
+      return Optional.of(response);
+    } catch (DebitNotFoundMarker notFound) {
+      return Optional.empty();
+    } catch (BetPlacementException e) {
+      throw e;
+    } catch (RestClientException e) {
+      throw new DependencyUnavailableException("wallet debit lookup failed: " + e.getMessage(), e);
     }
   }
 
@@ -106,17 +138,35 @@ public class WalletClient {
   }
 
   private UUID debitFallback(UUID betId, UUID userId, Money amount, Throwable t) {
-    return failClosed(t);
+    return translateFallback(t);
   }
 
   private UUID refundFallback(UUID betId, UUID userId, Money amount, Throwable t) {
-    return failClosed(t);
+    return translateFallback(t);
   }
 
-  private static UUID failClosed(Throwable t) {
+  private Optional<WalletOperationResponse> findDebitFallback(UUID betId, Throwable t) {
+    translateFallback(t);
+    throw new IllegalStateException("unreachable");
+  }
+
+  private static UUID requireOperationId(WalletOperationResponse response, String operation) {
+    if (response == null || response.operationGroupId() == null) {
+      throw new DependencyUnavailableException(
+          "wallet " + operation + " returned no operationGroupId");
+    }
+    return response.operationGroupId();
+  }
+
+  private static UUID translateFallback(Throwable t) {
     if (t instanceof BetPlacementException placement) {
       throw placement;
     }
     throw new DependencyUnavailableException("wallet-service unavailable (circuit open)", t);
+  }
+
+  private static final class DebitNotFoundMarker extends RuntimeException {
+
+    private static final long serialVersionUID = 1L;
   }
 }

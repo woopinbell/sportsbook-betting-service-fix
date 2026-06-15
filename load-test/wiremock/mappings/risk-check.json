@@ -1,11 +1,16 @@
 {
   "request": {
     "method": "POST",
-    "urlPath": "/internal/v1/risk/check"
+    "urlPath": "/internal/v1/risk/reservations"
   },
   "response": {
     "status": 200,
     "headers": { "Content-Type": "application/json" },
-    "jsonBody": { "approved": true, "patternsFlagged": [] }
+    "jsonBody": {
+      "approved": true,
+      "reservationState": "RESERVED",
+      "expiresAt": "2099-01-01T00:00:00Z",
+      "patternsFlagged": []
+    }
   }
 }

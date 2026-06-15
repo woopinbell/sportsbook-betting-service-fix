@@ -3,24 +3,27 @@ package com.sportsbook.betting.placement;
 import com.sportsbook.protocol.value.IdempotencyKey;
 import java.time.Duration;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Redis fast-path for idempotent placement (ADR-0005). The {@code uk_bet_idempotency_key} DB
- * constraint is the strong "process once" guarantee; this SETNX reservation is a latency shortcut
- * that lets the orchestration skip the persist + risk + wallet work when a duplicate is already
- * in-flight.
+ * Best-effort Redis correlation cache for completed placement (ADR-0005). PostgreSQL's {@code
+ * placement_request} primary key is the sole ownership boundary: a Redis SETNX gate is deliberately
+ * not used because a same-payload caller racing before the first DB row becomes visible must
+ * converge to that row/PENDING result rather than receive a false 409.
  *
- * <p>Key format {@code idempotency:betting:<caller-key>}, 24h TTL. The reservation holds {@code
- * "1"} until the bet is accepted, then is overwritten with the betId for traceability.
+ * <p>Key format {@code idempotency:betting:<caller-key>}, 24h TTL. Values are accepted bet IDs for
+ * operational traceability only; correctness never depends on this cache.
  */
 @Component
 public class IdempotencyCache {
 
+  private static final Logger log = LoggerFactory.getLogger(IdempotencyCache.class);
   static final Duration TTL = Duration.ofHours(24);
   static final String KEY_PREFIX = "idempotency:betting:";
-  private static final String RESERVED = "1";
 
   private final StringRedisTemplate redis;
 
@@ -28,15 +31,13 @@ public class IdempotencyCache {
     this.redis = redis;
   }
 
-  /** SETNX: returns true if this caller reserved the key, false if it was already taken. */
-  public boolean tryReserve(IdempotencyKey key) {
-    Boolean reserved = redis.opsForValue().setIfAbsent(redisKey(key), RESERVED, TTL);
-    return Boolean.TRUE.equals(reserved);
-  }
-
-  /** Records the committed betId so the fast path can correlate a later retry. */
+  /** Records the committed betId for diagnostics; failures never affect placement correctness. */
   public void markProcessed(IdempotencyKey key, UUID betId) {
-    redis.opsForValue().set(redisKey(key), betId.toString(), TTL);
+    try {
+      redis.opsForValue().set(redisKey(key), betId.toString(), TTL);
+    } catch (DataAccessException unavailable) {
+      log.warn("Could not update idempotency cache for bet {}", betId);
+    }
   }
 
   private static String redisKey(IdempotencyKey key) {

@@ -26,9 +26,10 @@
     <description>
         Core bet-placement service for the sportsbook system. Accepts bet slips
         (Single / Multiple / System K-of-N), validates slip structure and odds
-        slippage, then synchronously orchestrates a risk check and a wallet
-        debit before accepting or rejecting (ADR-0017). Publishes a post-hoc
-        BetPlacedRequested event via the transactional outbox.
+        slippage, then durably orchestrates a risk reservation and wallet debit
+        before accepting or rejecting (ADR-0017). Ambiguous dependency results
+        remain PENDING for reconciliation. Publishes BetPlacedRequested through
+        the transactional outbox.
     </description>
 
     <properties>
@@ -38,7 +39,7 @@
 
         <!-- Aligned with shared-protocol/pom.xml so Avro generated classes
              produced there link cleanly here. ADR-0014 / ADR-0006. -->
-        <shared-protocol.version>0.2.0-SNAPSHOT</shared-protocol.version>
+        <shared-protocol.version>0.3.0</shared-protocol.version>
         <avro.version>1.12.0</avro.version>
         <testcontainers.version>1.20.3</testcontainers.version>
         <!-- Pinned because annotationProcessorPaths does not consult the
@@ -199,8 +200,8 @@
             <artifactId>kafka</artifactId>
             <scope>test</scope>
         </dependency>
-        <!-- WireMock: stubs the risk-service /check and wallet-service
-             /debit | /credit HTTP endpoints in client + placement tests. -->
+        <!-- WireMock: stubs the risk reservation lifecycle and wallet-service
+             debit / lookup / credit HTTP endpoints in client + placement tests. -->
         <dependency>
             <groupId>org.wiremock</groupId>
             <artifactId>wiremock-standalone</artifactId>

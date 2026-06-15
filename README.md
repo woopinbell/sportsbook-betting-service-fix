@@ -2,8 +2,8 @@
 
 `betting-service`는 베팅 접수와 상태 관리를 담당합니다. 사용자가 제출한 단식,
 복식, 시스템 베팅을 검증하고 `risk-service`와 `wallet-service`를 차례로 호출해
-수락 여부를 즉시 결정합니다. 수락한 베팅의 정산 결과는 Kafka로 받아 최종 상태에
-반영합니다.
+수락을 진행합니다. 확정할 수 없는 외부 응답은 거절로 추측하지 않고 `PENDING`으로
+남겨 복구 작업이 이어받습니다. 수락한 베팅의 정산 결과는 Kafka로 받아 반영합니다.
 
 ## 주요 처리 흐름
 
@@ -11,10 +11,12 @@
 
 1. 슬립 구조와 베팅 금액을 검증합니다.
 2. Redis에 저장된 현재 배당과 비교해 마켓 상태와 허용 오차를 확인합니다.
-3. 베팅을 `PENDING` 상태로 저장합니다.
-4. `risk-service`에서 한도를 확인하고 `wallet-service`에서 금액을 차감합니다.
-5. 베팅을 `ACCEPTED` 또는 `REJECTED`로 전환합니다.
-6. 수락 이벤트를 같은 트랜잭션의 outbox에 기록합니다.
+3. 검증 거절 또는 `PENDING` bet을 `placement_request`의 단일 멱등 키와 함께
+   저장합니다.
+4. risk 한도를 원자적으로 예약하고 `RISK_RESERVED` 단계를 저장합니다.
+5. wallet 차감을 확인하고 `WALLET_CONFIRMED` 단계를 저장합니다.
+6. risk 예약을 확정하고 `RISK_COMMITTED` 단계로 전환합니다.
+7. 베팅 수락과 수락 이벤트를 같은 트랜잭션에서 기록합니다.
 
 외부 HTTP 호출 중에는 데이터베이스 트랜잭션을 유지하지 않습니다. 각 저장 작업을
 짧은 트랜잭션으로 나눠 네트워크 지연이 커넥션 풀을 점유하지 않도록 했습니다.
@@ -23,14 +25,26 @@
 
 ## 일관성
 
-- `Idempotency-Key`를 Redis에서 먼저 확인하고 데이터베이스 고유 제약으로 다시
-  보호합니다.
-- 같은 `betId`를 risk와 wallet 호출의 멱등 키로 전달해 재시도에 따른 중복 차감을
-  막습니다.
+- PostgreSQL `placement_request` 기본 키가 `Idempotency-Key`의 유일한 소유권
+  경계입니다. Redis 선점은 사용하지 않으므로 같은 본문의 동시 요청은 `409`가 아니라
+  하나의 bet/`PENDING` 결과로 수렴합니다.
+- 요청 본문의 SHA-256 fingerprint를 함께 저장하므로 같은 키에 다른 본문을 보내면
+  `409 DUPLICATE_BET`을 반환합니다.
+- aggregate 생성 전의 validator, 배당 변동, 마켓 종료 거절도 원래 오류 코드와
+  detail을 저장합니다. 이후 정책이나 실시간 상태가 바뀌어도 같은 요청은 최초
+  RFC 7807 verdict를 재현합니다.
+- 같은 `betId`를 risk 예약과 wallet 차감의 멱등 키로 전달해 중복 효과를 막습니다.
 - 베팅 수락과 `BetPlacedRequested` outbox 저장을 같은 트랜잭션에서 처리합니다.
-- 차감 뒤 수락 처리가 유실되어 `PENDING`에 남은 베팅은 reconciliation 작업이 다시
-  확인합니다. 재차 차감에 성공하면 수락하고, 잔액 부족이면 거절하며, 하위 서비스가
-  응답하지 않으면 다음 실행까지 보류합니다.
+- reconciliation은 저장된 배치 단계부터 재개합니다. wallet 응답이 유실된 경우 먼저
+  `GET /internal/v1/wallet/transactions/debit/{betId}`로 조회하고, 404일 때만 같은 키로
+  차감을 재시도합니다.
+- wallet 부족은 `RISK_RELEASE` 보상 의도를 먼저 저장하고 release가 성공한 뒤에만
+  거절합니다. wallet 차감 후 risk lease가 만료되고 재예약도 거절되면
+  `WALLET_REFUND` 보상 의도를 먼저 저장하고 `refund:<betId>`로 환불한 뒤 거절합니다.
+  두 분기 모두 `REQUIRED → IN_PROGRESS → COMPLETED`를 영속화하므로 응답 유실 뒤에는
+  보상만 재시도하며 debit/risk commit/수락 경로로 돌아가지 않습니다.
+- 확정 거절의 오류 코드와 detail을 저장하므로 같은 요청은 원래 RFC 7807 결과를
+  재현합니다.
 
 ## 정산
 
@@ -43,7 +57,8 @@
 
 ### HTTP
 
-- `POST /internal/v1/bets`: 베팅을 접수합니다.
+- `POST /internal/v1/bets`: 수락 완료는 `201`, 진행 결과가 모호하면 `202`와 공개
+  gateway 조회 경로인 `Location: /api/v1/bets/{id}` 및 `PENDING` 본문을 반환합니다.
 - `GET /internal/v1/bets/{id}`: 베팅 한 건을 조회합니다.
 - `GET /internal/v1/bets?userId=&cursor=&limit=`: 사용자의 베팅을 커서 방식으로
   조회합니다.
@@ -69,7 +84,7 @@
 
 ## 빌드와 검증
 
-`shared-protocol` 0.2.0을 로컬 Maven 저장소에 먼저 설치해야 합니다. 통합 테스트는
+`shared-protocol` 0.3.0을 로컬 Maven 저장소에 먼저 설치해야 합니다. 통합 테스트는
 Testcontainers를 사용하므로 Docker가 실행 중이어야 합니다.
 
 ```sh
@@ -85,16 +100,16 @@ cd ../sportsbook-betting-service
 `BETTING_DB_URL`, `BETTING_REDIS_HOST`, `BETTING_KAFKA_BOOTSTRAP`으로
 설정할 수 있으며 기본 HTTP 포트는 `8082`입니다.
 
-## 성능 확인
+## 성능 검증 상태
 
-2026년 5월 29일 개발 환경에서 초당 150건을 목표로 접수 부하를 실행했습니다.
-실측 처리량은 149.6 RPS, p95는 120.7ms, p99는 148.5ms였고 오류는 없었습니다.
-동일한 키를 순차적으로 50회 보낸 요청은 하나의 `betId`로 수렴했습니다.
+복구 가능한 배치 상태 머신 도입 후에는 처리량을 아직 다시 측정하지 않았으므로 현재
+릴리스의 RPS나 지연 수치를 주장하지 않습니다. 동시성 harness는 동일 actor·동일 키
+100건 뒤 데이터베이스 행, `ACCEPTED` 상태, outbox 및 WireMock wallet 차감이 각각
+정확히 하나인지 검증합니다.
 
-동일 키 100건을 동시에 보낸 시나리오는 응답이 모두 201 또는 409이고 5xx가 없다는
-점까지만 확인했습니다. 단일 수락, 단일 데이터베이스 행, 단일 wallet 차감까지
-검증하지는 않으므로 해당 정합성은 아직 측정 과제로 남아 있습니다. 자세한 실행 방법과
-수치는 [부하 테스트 결과](load-test/results/BEST.md)에서 확인할 수 있습니다.
+날짜별 기존 결과는 hardening 이전 구현의 역사 자료일 뿐 현재 릴리스의 성능 증거가
+아닙니다. 새 처리량은 이 정합성 검사를 함께 통과하고 소스·공통 계약·환경을 기록한
+실행만 채택합니다. 자세한 방법은 [부하 테스트 문서](load-test/README.md)에 있습니다.
 
 ## 현재 제한
 
@@ -103,6 +118,3 @@ cd ../sportsbook-betting-service
 - in-play 베팅
 - 서버 측 베팅 카트
 - Asian handicap의 half-won, half-lost 결과
-
-인프라 타임아웃과 5xx는 현재 오류 코드 목록에 별도의
-`SERVICE_UNAVAILABLE` 항목이 없어 HTTP 500으로 변환합니다.

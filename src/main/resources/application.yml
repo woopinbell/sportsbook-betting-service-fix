@@ -98,7 +98,7 @@ betting:
     poll-interval-ms: 10000
     pending-timeout: 30s
 
-# Resilience4j (ADR-0017). Only DependencyUnavailableException (the fail-closed
+# Resilience4j (ADR-0017). Only DependencyUnavailableException (the recoverable
 # signal the clients raise on timeout / 5xx / connection error) is recorded, so
 # business rejections (limit exceeded, insufficient balance) never trip a breaker.
 resilience4j:

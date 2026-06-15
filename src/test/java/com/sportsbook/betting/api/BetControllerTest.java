@@ -89,6 +89,9 @@ class BetControllerTest {
                     UuidV7.generate(),
                     Odds.ofDecimal("2.0000"))),
             Instant.parse("2026-05-29T07:00:00Z"));
+    bet.recordRiskReservation(Instant.parse("2026-05-29T07:02:00Z"), false, Instant.now());
+    bet.confirmWallet(UuidV7.generate(), Instant.now());
+    bet.commitRisk(Instant.now());
     bet.accept(Instant.parse("2026-05-29T07:00:01Z"));
     return bet;
   }
@@ -105,8 +108,7 @@ class BetControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(singleRequest()))
         .andExpect(status().isCreated())
-        .andExpect(
-            header().string("Location", org.hamcrest.Matchers.startsWith("/internal/v1/bets/")))
+        .andExpect(header().string("Location", org.hamcrest.Matchers.startsWith("/api/v1/bets/")))
         .andExpect(jsonPath("$.status").value("ACCEPTED"))
         .andExpect(jsonPath("$.betReference").value("B-2026-05-29-WEB00001"))
         .andExpect(jsonPath("$.maxPayout.amount").value(20000));
@@ -114,6 +116,38 @@ class BetControllerTest {
     ArgumentCaptor<PlaceBetCommand> command = ArgumentCaptor.forClass(PlaceBetCommand.class);
     verify(placement).place(command.capture());
     assertThat(command.getValue().userId()).isEqualTo(USER);
+  }
+
+  @Test
+  @DisplayName("POST ambiguous dependency result -> 202 with Location and PENDING body")
+  void placePending() throws Exception {
+    Bet pending =
+        Bet.pending(
+            UuidV7.generate(),
+            USER,
+            "B-2026-05-29-WEB00002",
+            new BetSlipType.Single(),
+            Money.krw(10_000),
+            Money.krw(20_000),
+            IdempotencyKey.of("idem-pending"),
+            List.of(
+                BetLeg.create(
+                    UuidV7.generate(),
+                    UuidV7.generate(),
+                    UuidV7.generate(),
+                    Odds.ofDecimal("2.0000"))),
+            Instant.parse("2026-05-29T07:00:00Z"));
+    when(placement.place(any())).thenReturn(pending);
+
+    mvc.perform(
+            post("/internal/v1/bets")
+                .header("X-User-Id", USER)
+                .header("Idempotency-Key", "idem-web")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(singleRequest()))
+        .andExpect(status().isAccepted())
+        .andExpect(header().string("Location", org.hamcrest.Matchers.startsWith("/api/v1/bets/")))
+        .andExpect(jsonPath("$.status").value("PENDING"));
   }
 
   @Test
@@ -176,9 +210,9 @@ class BetControllerTest {
   }
 
   @Test
-  @DisplayName("duplicate in-flight -> 409 DUPLICATE_BET")
+  @DisplayName("actor or payload key conflict -> 409 DUPLICATE_BET")
   void duplicate() throws Exception {
-    when(placement.place(any())).thenThrow(new DuplicateBetException("in progress"));
+    when(placement.place(any())).thenThrow(new DuplicateBetException("different payload"));
     expectProblem(409, "DUPLICATE_BET");
   }
 

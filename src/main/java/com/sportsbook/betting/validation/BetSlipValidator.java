@@ -14,8 +14,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * Structural slip validation against the configured policy (ADR-0008 / ADR-0009). Runs before any
- * external call on the placement path (ADR-0017 step 2), so a malformed slip is rejected cheaply
- * without touching risk, wallet, or the DB.
+ * external side effect on the placement path (ADR-0017 step 2), so a malformed slip never touches
+ * risk or wallet. The orchestration still persists its idempotent rejection verdict.
  *
  * <ul>
  *   <li><b>L1 Same Market</b> — two legs on the same market can't both win; rejected for multis.

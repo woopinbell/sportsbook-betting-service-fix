@@ -46,7 +46,7 @@ services:
     ports:
       - "59092:9092"
 
-  # Stand-in for risk-service (/internal/v1/risk/check -> approved) and
+  # Stand-in for risk-service (reservation + commit -> approved) and
   # wallet-service (/internal/v1/wallet/transactions/debit|credit -> ok).
   wiremock:
     image: wiremock/wiremock:3.9.2

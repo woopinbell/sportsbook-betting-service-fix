@@ -92,6 +92,36 @@ public class Bet {
   @Column(name = "rejection_reason", length = 64)
   private String rejectionReason;
 
+  @Column(name = "rejection_detail", length = 1024)
+  private String rejectionDetail;
+
+  @Column(name = "request_fingerprint", updatable = false, length = 64)
+  private String requestFingerprint;
+
+  @Enumerated(EnumType.STRING)
+  @Column(name = "placement_phase", nullable = false, length = 32)
+  private PlacementPhase placementPhase;
+
+  @Column(name = "risk_reservation_expires_at")
+  private Instant riskReservationExpiresAt;
+
+  @Column(name = "risk_commit_observed", nullable = false)
+  private boolean riskCommitObserved;
+
+  @Column(name = "wallet_operation_id")
+  private UUID walletOperationId;
+
+  @Enumerated(EnumType.STRING)
+  @Column(name = "compensation_action", length = 24)
+  private CompensationAction compensationAction;
+
+  @Enumerated(EnumType.STRING)
+  @Column(name = "compensation_state", nullable = false, length = 16)
+  private CompensationState compensationState;
+
+  @Column(name = "compensation_operation_id")
+  private UUID compensationOperationId;
+
   // Settlement outcome (ADR-0006 / ADR-0013), null until the bet reaches a terminal state.
   @Enumerated(EnumType.STRING)
   @Column(name = "settlement_result", length = SETTLEMENT_RESULT_COLUMN_LENGTH)
@@ -134,8 +164,8 @@ public class Bet {
     // Required by JPA.
   }
 
-  // 9 params — under the Checkstyle ParameterNumber max (10). A creation command record would hide
-  // the validation in a less obvious place; the aggregate root is the right home for these checks.
+  // Exactly the Checkstyle ParameterNumber max (10). A creation command record would hide the
+  // validation in a less obvious place; the aggregate root is the right home for these checks.
   private Bet(
       UUID betId,
       UUID userId,
@@ -144,6 +174,7 @@ public class Bet {
       Money stake,
       Money maxPayout,
       IdempotencyKey idempotencyKey,
+      String requestFingerprint,
       List<BetLeg> legs,
       Instant now) {
     this.betId = Objects.requireNonNull(betId, "betId");
@@ -153,6 +184,7 @@ public class Bet {
     Objects.requireNonNull(stake, "stake");
     Objects.requireNonNull(maxPayout, "maxPayout");
     Objects.requireNonNull(idempotencyKey, "idempotencyKey");
+    Objects.requireNonNull(requestFingerprint, "requestFingerprint");
     Objects.requireNonNull(legs, "legs");
     Objects.requireNonNull(now, "now");
 
@@ -167,6 +199,9 @@ public class Bet {
     this.stake = EmbeddedMoney.of(stake);
     this.maxPayout = EmbeddedMoney.of(maxPayout);
     this.idempotencyKey = idempotencyKey.value();
+    this.requestFingerprint = requestFingerprint;
+    this.placementPhase = PlacementPhase.CREATED;
+    this.compensationState = CompensationState.NONE;
     this.status = BetStatus.PENDING;
     this.createdAt = now;
     this.updatedAt = now;
@@ -187,25 +222,189 @@ public class Bet {
       Money stake,
       Money maxPayout,
       IdempotencyKey idempotencyKey,
+      String requestFingerprint,
       List<BetLeg> legs,
       Instant now) {
     return new Bet(
-        betId, userId, betReference, slipType, stake, maxPayout, idempotencyKey, legs, now);
+        betId,
+        userId,
+        betReference,
+        slipType,
+        stake,
+        maxPayout,
+        idempotencyKey,
+        requestFingerprint,
+        legs,
+        now);
+  }
+
+  /**
+   * Compatibility factory for domain fixtures created before payload fingerprints were persisted.
+   * Production placement always calls the overload with an actual SHA-256 fingerprint.
+   */
+  public static Bet pending(
+      UUID betId,
+      UUID userId,
+      String betReference,
+      BetSlipType slipType,
+      Money stake,
+      Money maxPayout,
+      IdempotencyKey idempotencyKey,
+      List<BetLeg> legs,
+      Instant now) {
+    return pending(
+        betId,
+        userId,
+        betReference,
+        slipType,
+        stake,
+        maxPayout,
+        idempotencyKey,
+        "legacy-" + betId,
+        legs,
+        now);
+  }
+
+  /** Records a successful or replayed risk reservation without downgrading a later local phase. */
+  public void recordRiskReservation(Instant expiresAt, boolean alreadyCommitted, Instant now) {
+    requireStatus(BetStatus.PENDING);
+    requireNoCompensation();
+    if (placementPhase == PlacementPhase.CREATED) {
+      placementPhase = PlacementPhase.RISK_RESERVED;
+    } else if (placementPhase != PlacementPhase.RISK_RESERVED
+        && placementPhase != PlacementPhase.WALLET_CONFIRMED) {
+      throw new IllegalStateException("Risk reservation cannot follow " + placementPhase);
+    }
+    this.riskReservationExpiresAt = expiresAt;
+    this.riskCommitObserved = this.riskCommitObserved || alreadyCommitted;
+    this.updatedAt = Objects.requireNonNull(now, "now");
+  }
+
+  /** Records proof that wallet applied the betId-keyed debit. */
+  public void confirmWallet(UUID operationId, Instant now) {
+    requireStatus(BetStatus.PENDING);
+    requireNoCompensation();
+    Objects.requireNonNull(operationId, "operationId");
+    if (placementPhase != PlacementPhase.RISK_RESERVED
+        && placementPhase != PlacementPhase.WALLET_CONFIRMED) {
+      throw new IllegalStateException("Wallet confirmation cannot follow " + placementPhase);
+    }
+    if (walletOperationId != null && !walletOperationId.equals(operationId)) {
+      throw new IllegalStateException("Wallet returned conflicting operation ids");
+    }
+    this.walletOperationId = operationId;
+    if (placementPhase == PlacementPhase.RISK_RESERVED) {
+      placementPhase = PlacementPhase.WALLET_CONFIRMED;
+    }
+    this.updatedAt = Objects.requireNonNull(now, "now");
+  }
+
+  /** Records that the risk reservation is committed after wallet proof exists. */
+  public void commitRisk(Instant now) {
+    requireStatus(BetStatus.PENDING);
+    requireNoCompensation();
+    if (placementPhase != PlacementPhase.WALLET_CONFIRMED) {
+      throw new IllegalStateException("Risk commit cannot follow " + placementPhase);
+    }
+    this.riskCommitObserved = true;
+    this.placementPhase = PlacementPhase.RISK_COMMITTED;
+    this.updatedAt = Objects.requireNonNull(now, "now");
   }
 
   /** PENDING → ACCEPTED: risk and wallet both succeeded (ADR-0017). */
   public void accept(Instant now) {
     requireStatus(BetStatus.PENDING);
+    requireNoCompensation();
+    if (placementPhase != PlacementPhase.RISK_COMMITTED) {
+      throw new IllegalStateException("Acceptance requires RISK_COMMITTED placement phase");
+    }
     this.status = BetStatus.ACCEPTED;
     this.updatedAt = Objects.requireNonNull(now, "now");
   }
 
   /** PENDING → REJECTED: validation, risk, or wallet declined. Terminal, pre-acceptance. */
   public void reject(String reason, Instant now) {
+    reject(reason, reason, now);
+  }
+
+  /** PENDING → REJECTED with enough information to replay the original RFC 7807 verdict. */
+  public void reject(String reason, String detail, Instant now) {
     requireStatus(BetStatus.PENDING);
+    requireNoCompensation();
     this.status = BetStatus.REJECTED;
     this.rejectionReason = reason;
+    this.rejectionDetail = detail;
     this.updatedAt = Objects.requireNonNull(now, "now");
+  }
+
+  /**
+   * Records the wallet's definitive insufficient-balance verdict before attempting to release the
+   * preceding risk reservation. This is the irreversible fence against another debit attempt.
+   */
+  public void requireRiskRelease(String reason, String detail, Instant now) {
+    requireStatus(BetStatus.PENDING);
+    requireNoCompensation();
+    if (placementPhase != PlacementPhase.RISK_RESERVED) {
+      throw new IllegalStateException("Risk release compensation cannot follow " + placementPhase);
+    }
+    requireCompensation(CompensationAction.RISK_RELEASE, reason, detail, now);
+  }
+
+  /**
+   * Records the risk re-reservation decline before attempting a wallet refund. This is the
+   * irreversible fence against a later risk commit and acceptance.
+   */
+  public void requireWalletRefund(String reason, String detail, Instant now) {
+    requireStatus(BetStatus.PENDING);
+    requireNoCompensation();
+    if (placementPhase != PlacementPhase.WALLET_CONFIRMED || walletOperationId == null) {
+      throw new IllegalStateException(
+          "Wallet refund compensation requires a confirmed wallet debit");
+    }
+    requireCompensation(CompensationAction.WALLET_REFUND, reason, detail, now);
+  }
+
+  /** Persists that the selected compensation is about to make its idempotent external call. */
+  public void beginCompensation(Instant now) {
+    requireStatus(BetStatus.PENDING);
+    if (compensationAction == null || compensationState != CompensationState.REQUIRED) {
+      throw new IllegalStateException(
+          "Compensation cannot begin from " + compensationAction + "/" + compensationState);
+    }
+    compensationState = CompensationState.IN_PROGRESS;
+    updatedAt = Objects.requireNonNull(now, "now");
+  }
+
+  /** Records proof that the risk reservation was released. */
+  public void completeRiskRelease(Instant now) {
+    requireCompensationInProgress(CompensationAction.RISK_RELEASE);
+    compensationState = CompensationState.COMPLETED;
+    updatedAt = Objects.requireNonNull(now, "now");
+  }
+
+  /** Records the durable wallet operation proving that the refund was applied. */
+  public void completeWalletRefund(UUID operationId, Instant now) {
+    requireCompensationInProgress(CompensationAction.WALLET_REFUND);
+    Objects.requireNonNull(operationId, "operationId");
+    if (compensationOperationId != null && !compensationOperationId.equals(operationId)) {
+      throw new IllegalStateException("Wallet returned conflicting refund operation ids");
+    }
+    compensationOperationId = operationId;
+    compensationState = CompensationState.COMPLETED;
+    updatedAt = Objects.requireNonNull(now, "now");
+  }
+
+  /** Finishes the original business rejection only after its rollback has durable proof. */
+  public void rejectAfterCompensation(Instant now) {
+    requireStatus(BetStatus.PENDING);
+    if (compensationAction == null
+        || compensationState != CompensationState.COMPLETED
+        || rejectionReason == null
+        || rejectionDetail == null) {
+      throw new IllegalStateException("A completed compensation verdict is required for rejection");
+    }
+    status = BetStatus.REJECTED;
+    updatedAt = Objects.requireNonNull(now, "now");
   }
 
   /**
@@ -270,6 +469,35 @@ public class Bet {
     }
   }
 
+  private void requireNoCompensation() {
+    if (compensationState != CompensationState.NONE || compensationAction != null) {
+      throw new IllegalStateException(
+          "Forward placement is fenced by " + compensationAction + "/" + compensationState);
+    }
+  }
+
+  private void requireCompensation(
+      CompensationAction action, String reason, String detail, Instant now) {
+    this.compensationAction = Objects.requireNonNull(action, "action");
+    this.compensationState = CompensationState.REQUIRED;
+    this.rejectionReason = requireText(reason, "reason");
+    this.rejectionDetail = requireText(detail, "detail");
+    this.updatedAt = Objects.requireNonNull(now, "now");
+  }
+
+  private void requireCompensationInProgress(CompensationAction expected) {
+    requireStatus(BetStatus.PENDING);
+    if (compensationAction != expected || compensationState != CompensationState.IN_PROGRESS) {
+      throw new IllegalStateException(
+          "Expected "
+              + expected
+              + "/IN_PROGRESS but was "
+              + compensationAction
+              + "/"
+              + compensationState);
+    }
+  }
+
   private static void requireStructure(BetSlipType slipType, int legCount) {
     if (slipType instanceof BetSlipType.Single && legCount != 1) {
       throw new IllegalArgumentException("SINGLE slip must have exactly 1 leg, got " + legCount);
@@ -328,6 +556,42 @@ public class Bet {
 
   public String rejectionReason() {
     return rejectionReason;
+  }
+
+  public String rejectionDetail() {
+    return rejectionDetail;
+  }
+
+  public String requestFingerprint() {
+    return requestFingerprint;
+  }
+
+  public PlacementPhase placementPhase() {
+    return placementPhase;
+  }
+
+  public Instant riskReservationExpiresAt() {
+    return riskReservationExpiresAt;
+  }
+
+  public boolean riskCommitObserved() {
+    return riskCommitObserved;
+  }
+
+  public UUID walletOperationId() {
+    return walletOperationId;
+  }
+
+  public CompensationAction compensationAction() {
+    return compensationAction;
+  }
+
+  public CompensationState compensationState() {
+    return compensationState;
+  }
+
+  public UUID compensationOperationId() {
+    return compensationOperationId;
   }
 
   public SettlementResult settlementResult() {

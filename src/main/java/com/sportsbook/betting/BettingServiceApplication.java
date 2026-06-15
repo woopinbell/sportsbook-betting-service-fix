@@ -9,9 +9,10 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * Betting service entry point.
  *
  * <p>Owns bet placement: slip structural validation (ADR-0008), odds-slippage checking against the
- * odds-feed Redis cache, and the synchronous risk-then-wallet orchestration that accepts or rejects
- * a slip (ADR-0017). Scheduling is enabled application-wide so the outbox publisher and the
- * reconciliation job can declare {@code @Scheduled} hooks without per-feature plumbing.
+ * odds-feed Redis cache, and the recoverable risk-reservation/wallet-debit orchestration that
+ * accepts or rejects a slip (ADR-0017). Scheduling is enabled application-wide so the outbox
+ * publisher and reconciliation job can declare {@code @Scheduled} hooks without per-feature
+ * plumbing.
  *
  * <p>{@code @ConfigurationPropertiesScan} binds {@code betting.policy.*} into {@code
  * BettingPolicyProperties} (ADR-0009) without an explicit {@code @EnableConfigurationProperties}.

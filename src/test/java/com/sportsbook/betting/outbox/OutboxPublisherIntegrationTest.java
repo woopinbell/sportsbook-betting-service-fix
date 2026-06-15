@@ -99,6 +99,9 @@ class OutboxPublisherIntegrationTest {
                     UuidV7.generate(),
                     Odds.ofDecimal("2.0000"))),
             Instant.parse("2026-05-29T07:00:00Z"));
+    bet.recordRiskReservation(Instant.parse("2026-05-29T07:02:00Z"), false, Instant.now());
+    bet.confirmWallet(UuidV7.generate(), Instant.now());
+    bet.commitRisk(Instant.now());
     bet.accept(Instant.parse("2026-05-29T07:00:01Z"));
     return bet;
   }

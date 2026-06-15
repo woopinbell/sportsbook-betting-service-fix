@@ -2,6 +2,7 @@ package com.sportsbook.betting.client;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
+import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
@@ -103,7 +104,7 @@ class WalletClientTest {
   }
 
   @Test
-  @DisplayName("5xx -> DependencyUnavailableException (fail-closed)")
+  @DisplayName("5xx -> DependencyUnavailableException (ambiguous/recoverable)")
   void serverError() {
     wm.stubFor(post(urlEqualTo(DEBIT_PATH)).willReturn(aResponse().withStatus(503)));
 
@@ -112,7 +113,7 @@ class WalletClientTest {
   }
 
   @Test
-  @DisplayName("read timeout -> DependencyUnavailableException (fail-closed)")
+  @DisplayName("read timeout -> DependencyUnavailableException (ambiguous/recoverable)")
   void timeout() {
     wm.stubFor(
         post(urlEqualTo(DEBIT_PATH))
@@ -122,6 +123,35 @@ class WalletClientTest {
 
     assertThatThrownBy(() -> client(Duration.ofMillis(150)).debit(BET, USER, AMOUNT))
         .isInstanceOf(DependencyUnavailableException.class);
+  }
+
+  @Test
+  @DisplayName("2xx without operationGroupId is ambiguous, never a confirmed debit")
+  void missingOperationId() {
+    wm.stubFor(post(urlEqualTo(DEBIT_PATH)).willReturn(okJson("{}")));
+
+    assertThatThrownBy(() -> client(Duration.ofMillis(500)).debit(BET, USER, AMOUNT))
+        .isInstanceOf(DependencyUnavailableException.class)
+        .hasMessageContaining("operationGroupId");
+  }
+
+  @Test
+  @DisplayName("read-only debit lookup distinguishes confirmed operation from 404")
+  void lookupDebit() {
+    UUID operationGroupId = UuidV7.generate();
+    String path = DEBIT_PATH + "/" + BET;
+    wm.stubFor(
+        get(urlEqualTo(path))
+            .willReturn(okJson("{\"operationGroupId\":\"" + operationGroupId + "\"}")));
+
+    assertThat(client(Duration.ofMillis(500)).findDebit(BET))
+        .get()
+        .extracting(WalletOperationResponse::operationGroupId)
+        .isEqualTo(operationGroupId);
+
+    wm.resetAll();
+    wm.stubFor(get(urlEqualTo(path)).willReturn(aResponse().withStatus(404)));
+    assertThat(client(Duration.ofMillis(500)).findDebit(BET)).isEmpty();
   }
 
   @Test

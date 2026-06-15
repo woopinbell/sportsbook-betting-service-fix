@@ -25,7 +25,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
  * shared-protocol {@link ErrorCode} catalog so the type URI / title / machine code stay consistent
  * across services. A {@link BetPlacementException} already carries its {@link ErrorCode} (so the
  * one handler covers ODDS_DRIFT / LIMIT_EXCEEDED / INSUFFICIENT_BALANCE / EVENT_CLOSED /
- * DUPLICATE_BET / fail-closed INTERNAL_ERROR); framework/binding failures map to VALIDATION_FAILED.
+ * DUPLICATE_BET / SERVICE_UNAVAILABLE); framework/binding failures map to VALIDATION_FAILED.
  *
  * <p>{@code correlationId} is the current trace id from the logging MDC when present.
  */

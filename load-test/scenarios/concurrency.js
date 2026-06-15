@@ -1,23 +1,20 @@
 // Concurrency proof (over HTTP): N VUs fire the SAME Idempotency-Key at once.
-// This harness checks only that every response is 201 or 409 and none is 5xx.
-// It does not collect accepted betIds, query DB rows, or count wallet debits,
-// so concurrent single-accept/single-debit remains a separate proof gap.
+// All VUs use the same actor, body, and key. After k6 completes,
+// verify-concurrency.sh proves the single DB row / accept / outbox / debit effects.
 //
 // Run (after `docker compose up` + `./seed.sh`):
 //   k6 run -e BASE_URL=http://localhost:58082 -e VUS=100 scenarios/concurrency.js
 
 import http from 'k6/http';
 import { check } from 'k6';
-import { uuidv4 } from 'https://jslib.k6.io/k6-utils/1.4.0/index.js';
-
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:58082';
 const VUS = parseInt(__ENV.VUS || '100', 10);
-const SHARED_KEY = __ENV.IDEMPOTENCY_KEY || `race-bench-${Date.now()}`;
+const SHARED_KEY = __ENV.IDEMPOTENCY_KEY || 'race-bench-v2';
 
 const EVENT = '11111111-1111-7111-8111-111111111111';
 const MARKET = '22222222-2222-7222-8222-222222222222';
 const SELECTION = '33333333-3333-7333-8333-333333333333';
-const USER = uuidv4();
+const USER = '44444444-4444-7444-8444-444444444444';
 
 export const options = {
   scenarios: {
@@ -52,7 +49,7 @@ export default function () {
   });
 
   check(res, {
-    'accepted (201) or duplicate (409), never 5xx': r =>
-      r.status === 201 || r.status === 409,
+    'same payload converges to accepted or pending; never conflicts': r =>
+      r.status === 201 || r.status === 202,
   });
 }

@@ -181,6 +181,9 @@ class SettlementConsumerIntegrationTest {
                     UuidV7.generate(),
                     Odds.ofDecimal("1.8500"))),
             T0);
+    bet.recordRiskReservation(T1.plusSeconds(120), false, T1);
+    bet.confirmWallet(UuidV7.generate(), T1);
+    bet.commitRisk(T1);
     bet.accept(T1);
     return bets.save(bet);
   }

@@ -3,13 +3,13 @@ package com.sportsbook.betting.error;
 import com.sportsbook.protocol.error.ErrorCode;
 
 /**
- * Base type for every business rejection on the placement path. Each carries a shared-protocol
- * {@link ErrorCode} so the {@code @ControllerAdvice} can render a single RFC 7807 ProblemDetail
- * shape (ADR-0004) without a per-exception mapping table.
+ * Base type for placement verdicts and recoverable dependency signals. Each carries a
+ * shared-protocol {@link ErrorCode} so the {@code @ControllerAdvice} can render one RFC 7807 shape
+ * if it reaches the HTTP boundary.
  *
- * <p>These are business rejections, not infrastructure failures: they are the expected "no" answers
- * (slip invalid, odds drifted, market closed, limit hit, balance short) and must never be counted
- * as Resilience4j circuit-breaker failures on the risk/wallet calls (ADR-0017).
+ * <p>Business subclasses are expected "no" answers and never count as circuit-breaker failures.
+ * {@link DependencyUnavailableException} is the explicit infrastructure subclass recorded by the
+ * breakers and normally absorbed as a durable PENDING result.
  */
 public abstract class BetPlacementException extends RuntimeException {
 
