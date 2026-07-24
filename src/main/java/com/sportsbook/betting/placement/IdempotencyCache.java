@@ -10,13 +10,13 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 /**
- * Best-effort Redis correlation cache for completed placement (ADR-0005). PostgreSQL's {@code
- * placement_request} primary key is the sole ownership boundary: a Redis SETNX gate is deliberately
- * not used because a same-payload caller racing before the first DB row becomes visible must
- * converge to that row/PENDING result rather than receive a false 409.
+ * 완료된 베팅 접수를 조회하기 위한 Redis 보조 캐시입니다(ADR-0005).
  *
- * <p>Key format {@code idempotency:betting:<caller-key>}, 24h TTL. Values are accepted bet IDs for
- * operational traceability only; correctness never depends on this cache.
+ * <p>요청의 소유권은 PostgreSQL {@code placement_request} 기본 키로만 판단합니다. 첫 데이터베이스 행이 보이기 전에 같은 본문으로 요청한 경우
+ * 잘못된 409가 아니라 기존 행이나 {@code PENDING} 결과로 수렴해야 하므로 Redis SETNX는 사용하지 않습니다.
+ *
+ * <p>키 형식은 {@code idempotency:betting:<caller-key>}이며 유효 시간은 24시간입니다. 값은 운영 확인용으로만 사용하며 처리의 정확성은 이
+ * 캐시에 의존하지 않습니다.
  */
 @Component
 public class IdempotencyCache {
@@ -31,7 +31,7 @@ public class IdempotencyCache {
     this.redis = redis;
   }
 
-  /** Records the committed betId for diagnostics; failures never affect placement correctness. */
+  /** 운영 확인을 위해 확정된 betId를 기록합니다. 기록 실패는 베팅 접수에 영향을 주지 않습니다. */
   public void markProcessed(IdempotencyKey key, UUID betId) {
     try {
       redis.opsForValue().set(redisKey(key), betId.toString(), TTL);

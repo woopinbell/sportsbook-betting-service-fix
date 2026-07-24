@@ -1,4 +1,4 @@
-# betting-service
+# 베팅 서비스
 
 `betting-service`는 베팅 접수와 상태 관리를 담당합니다. 사용자가 제출한 단식,
 복식, 시스템 베팅을 검증하고 `risk-service`와 `wallet-service`를 차례로 호출해
@@ -11,7 +11,7 @@
 
 1. 슬립 구조와 베팅 금액을 검증합니다.
 2. Redis에 저장된 현재 배당과 비교해 마켓 상태와 허용 오차를 확인합니다.
-3. 검증 거절 또는 `PENDING` bet을 `placement_request`의 단일 멱등 키와 함께
+3. 검증에서 거절됐거나 `PENDING` 상태인 베팅을 `placement_request`의 단일 멱등 키와 함께
    저장합니다.
 4. risk 한도를 원자적으로 예약하고 `RISK_RESERVED` 단계를 저장합니다.
 5. wallet 차감을 확인하고 `WALLET_CONFIRMED` 단계를 저장합니다.
@@ -28,22 +28,22 @@
 - PostgreSQL `placement_request` 기본 키가 `Idempotency-Key`의 유일한 소유권
   경계입니다. Redis 선점은 사용하지 않으므로 같은 본문의 동시 요청은 `409`가 아니라
   하나의 bet/`PENDING` 결과로 수렴합니다.
-- 요청 본문의 SHA-256 fingerprint를 함께 저장하므로 같은 키에 다른 본문을 보내면
+- 요청 본문의 SHA-256 해시를 함께 저장하므로 같은 키에 다른 본문을 보내면
   `409 DUPLICATE_BET`을 반환합니다.
-- aggregate 생성 전의 validator, 배당 변동, 마켓 종료 거절도 원래 오류 코드와
-  detail을 저장합니다. 이후 정책이나 실시간 상태가 바뀌어도 같은 요청은 최초
-  RFC 7807 verdict를 재현합니다.
+- 베팅 객체를 만들기 전의 검증, 배당 변동, 마켓 종료로 인한 거절도 원래 오류 코드와
+  상세 내용을 저장합니다. 이후 정책이나 실시간 상태가 바뀌어도 같은 요청은 최초
+  RFC 7807 판정을 재현합니다.
 - 같은 `betId`를 risk 예약과 wallet 차감의 멱등 키로 전달해 중복 효과를 막습니다.
-- 베팅 수락과 `BetPlacedRequested` outbox 저장을 같은 트랜잭션에서 처리합니다.
-- reconciliation은 저장된 배치 단계부터 재개합니다. wallet 응답이 유실된 경우 먼저
+- 베팅 수락과 `BetPlacedRequested` 아웃박스 저장을 같은 트랜잭션에서 처리합니다.
+- 복구 작업은 저장된 접수 단계부터 재개합니다. 지갑 응답이 유실된 경우 먼저
   `GET /internal/v1/wallet/transactions/debit/{betId}`로 조회하고, 404일 때만 같은 키로
   차감을 재시도합니다.
-- wallet 부족은 `RISK_RELEASE` 보상 의도를 먼저 저장하고 release가 성공한 뒤에만
-  거절합니다. wallet 차감 후 risk lease가 만료되고 재예약도 거절되면
+- 잔액 부족 시에는 `RISK_RELEASE` 보상 작업을 먼저 저장하고 예약 해제가 성공한 뒤에만
+  거절합니다. 지갑 차감 후 위험 한도 예약이 만료되고 재예약도 거절되면
   `WALLET_REFUND` 보상 의도를 먼저 저장하고 `refund:<betId>`로 환불한 뒤 거절합니다.
   두 분기 모두 `REQUIRED → IN_PROGRESS → COMPLETED`를 영속화하므로 응답 유실 뒤에는
-  보상만 재시도하며 debit/risk commit/수락 경로로 돌아가지 않습니다.
-- 확정 거절의 오류 코드와 detail을 저장하므로 같은 요청은 원래 RFC 7807 결과를
+  보상만 재시도하며 차감·위험 한도 확정·수락 경로로 돌아가지 않습니다.
+- 확정 거절의 오류 코드와 상세 내용을 저장하므로 같은 요청은 원래 RFC 7807 결과를
   재현합니다.
 
 ## 정산
@@ -102,12 +102,12 @@ cd ../sportsbook-betting-service
 
 ## 성능 검증 상태
 
-복구 가능한 배치 상태 머신 도입 후에는 처리량을 아직 다시 측정하지 않았으므로 현재
-릴리스의 RPS나 지연 수치를 주장하지 않습니다. 동시성 harness는 동일 actor·동일 키
-100건 뒤 데이터베이스 행, `ACCEPTED` 상태, outbox 및 WireMock wallet 차감이 각각
-정확히 하나인지 검증합니다.
+복구 가능한 접수 상태 머신을 도입한 뒤에는 처리량을 다시 측정하지 않았으므로 현재
+코드의 RPS나 지연 수치를 제시하지 않습니다. 동시성 검증은 같은 사용자와 같은 키로
+100건을 요청한 뒤 데이터베이스 행, `ACCEPTED` 상태, 아웃박스 및 WireMock 지갑
+차감이 각각 하나인지 확인합니다.
 
-날짜별 기존 결과는 hardening 이전 구현의 역사 자료일 뿐 현재 릴리스의 성능 증거가
+날짜별 기존 결과는 안정화 전 구현의 과거 측정 자료일 뿐 현재 코드의 성능 근거가
 아닙니다. 새 처리량은 이 정합성 검사를 함께 통과하고 소스·공통 계약·환경을 기록한
 실행만 채택합니다. 자세한 방법은 [부하 테스트 문서](load-test/README.md)에 있습니다.
 

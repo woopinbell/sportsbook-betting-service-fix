@@ -7,7 +7,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 
-/** Produces a stable SHA-256 fingerprint for Idempotency-Key payload conflict detection. */
+/** 같은 Idempotency-Key에 다른 요청 본문을 사용했는지 확인할 SHA-256 해시를 만듭니다. */
 final class RequestFingerprint {
 
   private RequestFingerprint() {}

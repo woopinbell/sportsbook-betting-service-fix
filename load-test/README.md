@@ -11,12 +11,12 @@
 |---|---|
 | `scenarios/placement_load.js` | 지속 부하에서 처리량, p95, p99, 오류율 |
 | `scenarios/idempotency.js` | 같은 `Idempotency-Key`의 순차 재요청이 하나의 `betId`로 수렴하는지 여부 |
-| `scenarios/concurrency.js` | 같은 actor·본문·키의 동시 요청 100건 |
+| `scenarios/concurrency.js` | 같은 사용자·본문·키의 동시 요청 100건 |
 
-동시성 실행은 같은 payload의 `201` 또는 `202`만 허용하며 `409`는 실패입니다.
-`verify-concurrency.sh`는 단일 placement request, 단일 bet, 단일 ACCEPTED, 단일
-outbox 및 단일 wallet 차감을 확인합니다. 이 검증은 다른 시나리오의 행이 섞이지
-않도록 fresh volume에서 실행해야 합니다.
+동시성 실행은 같은 요청 본문의 `201` 또는 `202`만 허용하며 `409`는 실패입니다.
+`verify-concurrency.sh`는 접수 요청, 베팅, `ACCEPTED` 상태, 아웃박스, 지갑 차감이
+각각 하나인지 확인합니다. 이 검증은 다른 시나리오의 행이 섞이지
+않도록 새 볼륨에서 실행해야 합니다.
 
 모든 요청은 본문의 `userId`와 같은 UUID를 `X-User-Id` 헤더에도 담습니다. 두 값이
 다르거나 헤더가 올바른 UUID가 아니면 서비스는 `403 FORBIDDEN`을 반환합니다.
@@ -53,6 +53,6 @@ docker compose down -v
 호스트 포트는 betting `58082`, PostgreSQL `55432`, Redis `56379`, Kafka
 `59092`, WireMock `58080`을 사용합니다.
 
-측정 결과는 날짜별 JSON으로 저장합니다. 현재 릴리스에 채택할 수 있는 결과와
-채택 조건은 [`results/BEST.md`](results/BEST.md)에 정리하며, hardening 이전의
-날짜별 파일은 역사 자료로만 취급합니다.
+측정 결과는 날짜별 JSON으로 저장합니다. 현재 코드에 채택할 수 있는 결과와
+채택 조건은 [`results/BEST.md`](results/BEST.md)에 정리하며, 안정화 전의
+날짜별 파일은 과거 측정 자료로만 취급합니다.
