@@ -11,8 +11,9 @@
 
 1. 슬립 구조와 베팅 금액을 검증합니다.
 2. Redis에 저장된 현재 배당과 비교해 마켓 상태와 허용 오차를 확인합니다.
-3. 검증에서 거절됐거나 `PENDING` 상태인 베팅을 `placement_request`의 단일 멱등 키와 함께
-   저장합니다.
+3. 베팅 객체를 만들 수 있는 요청은 `PENDING` 베팅과 `placement_request`를 함께
+   저장합니다. 슬립 검증·마켓 종료·배당 변동의 사전 거절은 베팅 없이
+   `placement_request`에만 저장합니다.
 4. risk 한도를 원자적으로 예약하고 `RISK_RESERVED` 단계를 저장합니다.
 5. wallet 차감을 확인하고 `WALLET_CONFIRMED` 단계를 저장합니다.
 6. risk 예약을 확정하고 `RISK_COMMITTED` 단계로 전환합니다.
@@ -20,14 +21,16 @@
 
 외부 HTTP 호출 중에는 데이터베이스 트랜잭션을 유지하지 않습니다. 각 저장 작업을
 짧은 트랜잭션으로 나눠 네트워크 지연이 커넥션 풀을 점유하지 않도록 했습니다.
-인프라 오류는 Resilience4j의 타임아웃과 서킷 브레이커로 처리하며, 한도 초과나 잔액
-부족 같은 정상적인 거절은 장애로 집계하지 않습니다.
+연결·읽기 제한 시간은 `ClientConfig`의 `RestClient` 요청 팩토리가 적용하고,
+Resilience4j 서킷 브레이커가 연속 장애와 열린 회로의 fallback을 처리합니다. 한도
+초과나 잔액 부족 같은 정상적인 거절은 서킷 브레이커 장애로 집계하지 않습니다.
 
 ## 일관성
 
 - PostgreSQL `placement_request` 기본 키가 `Idempotency-Key`의 유일한 소유권
-  경계입니다. Redis 선점은 사용하지 않으므로 같은 본문의 동시 요청은 `409`가 아니라
-  하나의 bet/`PENDING` 결과로 수렴합니다.
+  경계입니다. Redis 선점은 사용하지 않으므로 같은 본문의 동시 요청은 잘못된
+  `409`를 반환하지 않고 하나의 betId로 수렴합니다. 각 응답은 요청이 저장된 단계를
+  읽은 시점에 따라 `PENDING` 또는 `ACCEPTED`일 수 있습니다.
 - 요청 본문의 SHA-256 해시를 함께 저장하므로 같은 키에 다른 본문을 보내면
   `409 DUPLICATE_BET`을 반환합니다.
 - 베팅 객체를 만들기 전의 검증, 배당 변동, 마켓 종료로 인한 거절도 원래 오류 코드와
@@ -49,9 +52,19 @@
 ## 정산
 
 `settlement-service`가 발행한 `BetSettled`와 `BetVoided` 이벤트를 받아
-`ACCEPTED` 베팅을 각각 `SETTLED`와 `VOIDED`로 전환합니다. 같은 이벤트가 다시
-전달되어도 상태가 중복 변경되지 않도록 `betId` 기준으로 멱등 처리합니다. 승패 판정과
-지급액 계산은 settlement의 책임이며, 이 서비스는 전달받은 결과만 저장합니다.
+`ACCEPTED` 베팅을 각각 `SETTLED`와 `VOIDED`로 전환합니다. 이미 같은 종료 상태라면
+payload를 다시 비교하지 않고 no-op으로 끝냅니다. 따라서 같은 종류이지만 결과·지급액
+또는 무효 사유가 달라진 이벤트는 이 서비스가 충돌로 탐지하지 않습니다. 반대 종류의
+종료 이벤트, 알 수 없는 bet, `ACCEPTED` 이외 상태의 첫 종료 이벤트는 정상 재전달로
+보지 않고 예외를 발생시켜 retry/DLT 경로로 보냅니다. 승패 판정과 지급액 계산은
+settlement의 책임이며, 이 서비스는 전달받은 결과만 저장합니다.
+
+## 설계와 문제 해결 기록
+
+- [베팅 접수의 일관성 경계](architecture/betting-consistency-boundaries.md)
+- [내구성 있는 멱등 판정](devlog/01-durable-idempotency-verdict.md)
+- [재개 가능한 접수와 보상](devlog/02-resumable-placement-and-compensation.md)
+- [아웃박스와 정산 재전달](devlog/03-outbox-and-settlement-redelivery.md)
 
 ## 인터페이스
 
@@ -102,14 +115,10 @@ cd ../sportsbook-betting-service
 
 ## 성능 검증 상태
 
-복구 가능한 접수 상태 머신을 도입한 뒤에는 처리량을 다시 측정하지 않았으므로 현재
-코드의 RPS나 지연 수치를 제시하지 않습니다. 동시성 검증은 같은 사용자와 같은 키로
-100건을 요청한 뒤 데이터베이스 행, `ACCEPTED` 상태, 아웃박스 및 WireMock 지갑
-차감이 각각 하나인지 확인합니다.
-
-날짜별 기존 결과는 안정화 전 구현의 과거 측정 자료일 뿐 현재 코드의 성능 근거가
-아닙니다. 새 처리량은 이 정합성 검사를 함께 통과하고 소스·공통 계약·환경을 기록한
-실행만 채택합니다. 자세한 방법은 [부하 테스트 문서](load-test/README.md)에 있습니다.
+접수 상태 머신의 처리량과 지연 수치는 아직 제시하지 않습니다. 동시성 검증은 같은
+사용자와 같은 키로 100건을 요청한 뒤 `placement_request`, 베팅, `ACCEPTED` 상태,
+아웃박스와 WireMock 지갑 차감이 각각 하나인지 확인합니다. 측정 절차와 결과 채택
+조건은 [부하 테스트 문서](load-test/README.md)에 있습니다.
 
 ## 현재 제한
 
