@@ -17,6 +17,11 @@ Kafka를 먼저 보내고 DB 커밋이 실패하면 존재하지 않는 bet 사�
 PENDING 베팅 집계이며, 슬립 종류와 System K/N, 선택지 순서, 제출 배당, 단위 지분과
 멱등 키를 페이로드에 담는다.
 
+K와 N은 System 슬립에서만 값이 있고 Single과 Multiple에서는 `null`이다.
+`systemTotalSelections` 스키마 설명은 비 System에서도 전체 선택지 수를 담는다고
+적혀 있어 실제 생산 규칙과 다르다. 소비자는 필드 이름과 설명만 보고 N이 항상
+존재한다고 가정해서는 안 된다.
+
 ```java
 return OutboxEvent.pending(
     UuidV7.generate(), TOPIC, bet.userId().toString(), SCHEMA, payload, now);

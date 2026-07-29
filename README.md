@@ -94,6 +94,12 @@ DLT 경로로 갑니다. 두 토픽을 합친 전체 처리 순서는 없습니�
 - 발행: `BetPlacedRequested` (`bet.placed.v1`)
 - 구독: `BetSettled` (`bet.settled.v1`), `BetVoided` (`bet.voided.v1`)
 
+공용 프로토콜에는 `WalletDebitFailed`, `WalletDebited`, `WalletCredited`,
+`OddsChanged`도 있지만 이 서비스는 이 사건들을 구독하지 않습니다. 잔액 부족 판정과
+보상은 지갑 HTTP 응답·조회·환불 요청으로 진행하고, 접수 가격은 odds-feed가 Redis에
+쓴 값을 읽어 검증합니다. `BetVoided` 역시 정산 서비스가 지갑 환불을 마친 뒤 발행하는
+사실 통지이며, 베팅 서비스는 종료 상태만 반영합니다.
+
 ## 기술 구성
 
 - Java 17, Spring Boot 3.2.11, Maven

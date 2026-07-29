@@ -51,6 +51,12 @@ return new DependencyUnavailableException(
 잔액 부족이라 단정하면 새 오류 코드나 잘못된 응답을 확정 거절로 저장할 수
 있다.
 
+공용 프로토콜에는 `WalletDebitFailed`가 있지만 이 서비스에는 이를 받는 리스너가
+없다. 잔액 부족 뒤 위험 예약 해제를 시작하는 계기는 동기 HTTP 422 응답이다.
+`WalletDebitFailed` 스키마와 지갑의 사건 팩터리에 남은 saga 보상 설명은 이 실제
+연결을 반영하지 않는다. 나중에 도착한 Kafka 사건이 별도의 보상을 시작하는 구조도
+아니다.
+
 환불은 차감과 다른 `refund:{betId}` 키를 쓴다. 같은 bet ID 문자열만 쓰면 지갑이
 반대 방향의 입금을 원래 차감 재시도로 오인할 수 있다. 입금 출처는 잠긴
 사용자 지분을 돌리는 `USER_LOCKED`다.
